@@ -1,0 +1,181 @@
+import pandas as pd
+import numpy as np
+
+from catboost import CatBoostRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+
+# =========================
+# LOAD DATASET
+# =========================
+
+train = pd.read_csv("train.csv")
+test = pd.read_csv("test.csv")
+
+print("Train Shape:", train.shape)
+print("Test Shape:", test.shape)
+
+# =========================
+# HANDLE MISSING VALUES
+# =========================
+
+# Numerical columns
+num_cols = train.select_dtypes(include=np.number).columns
+
+for col in num_cols:
+
+    train[col] = train[col].fillna(train[col].mean())
+
+    if col in test.columns:
+        test[col] = test[col].fillna(test[col].mean())
+
+# Categorical columns
+cat_cols = train.select_dtypes(include='object').columns
+
+for col in cat_cols:
+
+    train[col] = train[col].fillna(train[col].mode()[0])
+
+    if col in test.columns:
+        test[col] = test[col].fillna(test[col].mode()[0])
+
+# =========================
+# FEATURE ENGINEERING
+# =========================
+
+# Convert timestamp
+train['timestamp'] = pd.to_datetime(
+    train['timestamp'],
+    errors='coerce'
+)
+
+test['timestamp'] = pd.to_datetime(
+    test['timestamp'],
+    errors='coerce'
+)
+
+# Extract time features
+train['hour'] = train['timestamp'].dt.hour
+train['dayofweek'] = train['timestamp'].dt.dayofweek
+train['month'] = train['timestamp'].dt.month
+
+test['hour'] = test['timestamp'].dt.hour
+test['dayofweek'] = test['timestamp'].dt.dayofweek
+test['month'] = test['timestamp'].dt.month
+
+# Weekend feature
+train['is_weekend'] = train['dayofweek'].isin([5, 6]).astype(int)
+test['is_weekend'] = test['dayofweek'].isin([5, 6]).astype(int)
+
+# Peak hour feature
+train['peak_hour'] = train['hour'].apply(
+    lambda x: 1 if x in [8, 9, 17, 18] else 0
+)
+
+test['peak_hour'] = test['hour'].apply(
+    lambda x: 1 if x in [8, 9, 17, 18] else 0
+)
+
+# Drop timestamp column
+train.drop('timestamp', axis=1, inplace=True)
+test.drop('timestamp', axis=1, inplace=True)
+
+# =========================
+# TARGET VARIABLE
+# =========================
+
+# Last column is target
+target = 'demand'
+
+X = train.drop(columns=[target])
+
+y = train[target]
+
+# =========================
+# CATEGORICAL FEATURES
+# =========================
+
+categorical_features = []
+
+for col in X.columns:
+
+    if X[col].dtype == 'object':
+
+        categorical_features.append(col)
+
+        # convert both train and test to string
+        X[col] = X[col].astype(str)
+
+        test[col] = test[col].astype(str)
+
+print("Categorical Features:")
+print(categorical_features)
+
+# =========================
+# TRAIN VALIDATION SPLIT
+# =========================
+
+X_train, X_valid, y_train, y_valid = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42
+)
+
+# =========================
+# CATBOOST MODEL
+# =========================
+
+cat_model = CatBoostRegressor(
+    iterations=2000,
+    learning_rate=0.03,
+    depth=10,
+    loss_function='MAE',
+    eval_metric='MAE',
+    random_seed=42,
+    verbose=100
+)
+
+# =========================
+# TRAIN MODEL
+# =========================
+
+cat_model.fit(
+    X_train,
+    y_train,
+    cat_features=categorical_features,
+    eval_set=(X_valid, y_valid)
+)
+
+# =========================
+# VALIDATION
+# =========================
+
+preds = cat_model.predict(X_valid)
+
+mae = mean_absolute_error(y_valid, preds)
+
+print("Validation MAE:", mae)
+
+# =========================
+# FINAL PREDICTIONS
+# =========================
+
+final_predictions = cat_model.predict(test)
+
+# =========================
+# CREATE SUBMISSION FILE
+# =========================
+
+submission = pd.DataFrame({
+    'Index': range(41778),
+    'demand': final_predictions
+})
+
+submission.to_csv("submission.csv", index=False)
+
+print(submission.shape)
+
+print(submission.head())
+
+print("Submission file created successfully!")
